@@ -52,3 +52,9 @@ DUMP.txt
 touchHLE_apps/
 target/
 *.ipa
+
+# Generated release dependencies and local game imports
+/touchHLE-ios-core/
+/Payload/
+/iTunesArtwork
+/iTunesMetadata.plist
