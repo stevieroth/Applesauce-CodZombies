@@ -1,7 +1,8 @@
 # Applesauce-CodZombies
 
-An unofficial Applesauce fork focused on **Call of Duty: Zombies 1.5.0** on
-modern iPhones, using touchHLE. This edition supports **offline play with
+An unofficial edition of [Applesauce, created by johnny901901901](https://github.com/johnny901901901/Applesauce),
+focused on **Call of Duty: Zombies 1.5.0** on modern iPhones, using touchHLE.
+This edition supports **offline play with
 on-screen touch controls**. No game files are included.
 
 ## Download and install
@@ -60,7 +61,7 @@ logs before posting them; do not upload game files or pairing data.
 - [Applesauce / johnny901901901](https://github.com/johnny901901901/Applesauce):
   native iOS app, interface, build and packaging work.
 - [ChatProductions](https://github.com/ChatProductions/Applesauce-AppStore-StikDebug):
-  immediate parent fork and LiveContainer/JIT diagnostic foundation.
+  intermediate fork used during development and LiveContainer/JIT diagnostics.
 - [touchHLE](https://github.com/touchHLE/touchHLE) and its
   [iOS port](https://github.com/johnny901901901/touchHLE): emulator core.
 - [HyperHLE](https://github.com/HyperHLE/HyperHLE): upstream repository heritage;

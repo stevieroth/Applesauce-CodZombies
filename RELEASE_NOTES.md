@@ -4,6 +4,10 @@ First downloadable release candidate for offline Call of Duty: Zombies 1.5.0
 on iOS. **No compilation needed:** sideload the unsigned IPA, enable JIT with
 the included script, and import your own decrypted iOS copy of the game.
 
+Based on [Applesauce by johnny901901901](https://github.com/johnny901901901/Applesauce),
+with emulation provided by touchHLE. This is an unofficial community edition;
+full upstream and contributor credits are in the README.
+
 Retains the working Zombies startup, audio, Dynarmic JIT and orientation/run-loop
 fixes. Removes the experimental Zombies controller profile and multiplayer
 networking additions. Ships only touchHLE. Use on-screen touch controls;
