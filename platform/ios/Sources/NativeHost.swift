@@ -498,6 +498,25 @@ private final class GameControlsWindow: UIWindow {
 private final class GameControlsViewController: UIViewController {
     var allowedOrientations: UIInterfaceOrientationMask = .portrait
     var onExit: (() -> Void)?
+    private var orientationLockEnabled = false
+
+    override var shouldAutorotate: Bool {
+        !orientationLockEnabled
+    }
+
+    override var prefersInterfaceOrientationLocked: Bool {
+        if #available(iOS 26.0, *) {
+            return orientationLockEnabled
+        }
+        return false
+    }
+
+    func setOrientationLockEnabled(_ enabled: Bool) {
+        orientationLockEnabled = enabled
+        if #available(iOS 26.0, *) {
+            setNeedsUpdateOfPrefersInterfaceOrientationLocked()
+        }
+    }
 
     private(set) lazy var exitButton: UIButton = {
         let button = UIButton(type: .system)
@@ -741,14 +760,21 @@ final class TouchHLENativeHost: NSObject {
                 "touchHLE game surface ready: orientation=\(windowScene.interfaceOrientation.rawValue) " +
                 "bounds=\(Int(bounds.width))x\(Int(bounds.height))"
             )
-            // `interfaceOrientation` flips as soon as the rotation is applied,
-            // but UIKit's scene-geometry transaction can still be in flight.
-            // The emulator takes the main thread and never gives it back, so if
-            // we start it mid-transition the scene never finishes rotating and
-            // UIKit stops dispatching touches to every window in it — timers
-            // and hit-testing keep working, which is what made this so hard to
-            // see. Give the transition run-loop turns to commit first.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            // Wait for the initial geometry transition, then enter the game
+            // from a run-loop timer. A dispatch block here holds the serial
+            // main queue for the entire game, starving UIKit's queued work
+            // even though SDL continues to pump timers and input sources.
+            touchhle_ios_schedule_game_launch {
+                if let viewController = self.gameControlsWindow?.rootViewController
+                    as? GameControlsViewController {
+                    viewController.setOrientationLockEnabled(true)
+                    if #available(iOS 26.0, *) {
+                        let locked = windowScene.effectiveGeometry.isInterfaceOrientationLocked
+                        print("TRACE13 scene orientation lock requested: effective=\(locked)")
+                    } else {
+                        print("TRACE13 scene orientation lock requested: legacy autorotation disabled")
+                    }
+                }
                 completion()
             }
             return
@@ -788,8 +814,8 @@ private struct LibraryView: View {
 
     @AppStorage("scaleHack") private var scaleHack = 3
     @AppStorage("orientation") private var orientation = 0
-    @AppStorage("networkAccess") private var networkAccess = false
-    @AppStorage("analogTilt") private var analogTilt = true
+    private let networkAccess = false
+    private let analogTilt = false
 
     private static let ipaType = UTType(filenameExtension: "ipa") ?? .archive
 
@@ -967,7 +993,7 @@ private enum StikDebug {
         components.host = "enable-jit"
         components.queryItems = [
             URLQueryItem(name: "bundle-id", value: bundleIdentifier),
-            URLQueryItem(name: "script-name", value: "universal.js")
+            URLQueryItem(name: "script-name", value: "Applesauce-LiveContainer-universal.js")
         ]
         return components.url
     }
@@ -1199,8 +1225,8 @@ private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("scaleHack") private var scaleHack = 3
     @AppStorage("orientation") private var orientation = 0
-    @AppStorage("networkAccess") private var networkAccess = false
-    @AppStorage("analogTilt") private var analogTilt = true
+    private let networkAccess = false
+    private let analogTilt = false
     @AppStorage("defaultCore") private var defaultCoreRaw = ""
 
     private var defaultCore: CoreKind {
@@ -1241,15 +1267,8 @@ private struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Network Access", isOn: $networkAccess)
-                } header: {
-                    Text("Permissions")
-                } footer: {
-                    Text("Some games need network access. Leave this off unless a game requires it.")
-                }
-
-                Section("Controls") {
-                    Toggle("Analog Sticks Control Tilt", isOn: $analogTilt)
+                    Text("Use the game's touchscreen controls. This edition supports offline play.")
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
@@ -1416,13 +1435,13 @@ private struct AboutView: View {
                 Section("About") {
                     Text("Applesauce plays older 32-bit iPhone games on modern devices, without including any Apple software. It is an experimental community project, and no games are included.")
 
-                    Link(destination: URL(string: "https://github.com/johnny901901901/Applesauce")!) {
+                    Link(destination: URL(string: "https://github.com/stevieroth/Applesauce-CodZombies")!) {
                         Label("Applesauce on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
                 }
 
                 Section {
-                    Text("The emulation is entirely the work of touchHLE and its fork HyperHLE. Applesauce is the iOS app built around them — the interface, the build system and the packaging — and ships both cores so you can choose which one runs each game.")
+                    Text("Applesauce-CodZombies is an unofficial Applesauce fork focused on Call of Duty: Zombies 1.5.0. It uses touchHLE with compatibility fixes, touchscreen controls and offline play. No games are included.")
 
                     Text("Applesauce is an unaffiliated fork. Neither project is connected to it or endorses it, and problems you hit here should be reported to Applesauce rather than to them.")
 
@@ -1435,7 +1454,7 @@ private struct AboutView: View {
                     }
 
                     Link(destination: URL(string: "https://github.com/HyperHLE/HyperHLE")!) {
-                        Label("HyperHLE Core", systemImage: "chevron.left.forwardslash.chevron.right")
+                        Label("HyperHLE (project heritage)", systemImage: "chevron.left.forwardslash.chevron.right")
                     }
 
                     Link(destination: URL(string: "https://appdb.touchhle.org/")!) {

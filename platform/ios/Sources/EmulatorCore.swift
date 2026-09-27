@@ -1,48 +1,26 @@
 import Foundation
 
-/// One of the emulator cores shipped inside the app.
-///
-/// The cores are forks of each other and export the same symbols, so they can
-/// never be linked into one binary. Each is built as a dylib in
-/// `touchHLE.app/Frameworks` instead, and the one a game needs is loaded with
-/// `dlopen` when that game starts.
+/// This build ships touchHLE as a dylib, loaded when a game starts.
 enum CoreKind: String, CaseIterable, Identifiable {
-    case hyperHLE = "hyperhle"
     case touchHLE = "touchhle"
 
     var id: String { rawValue }
 
     var displayName: String {
-        switch self {
-        case .hyperHLE: return "HyperHLE"
-        case .touchHLE: return "touchHLE"
-        }
+        "touchHLE"
     }
 
     var version: String {
-        switch self {
-        case .hyperHLE: return "v1.0.6"
-        case .touchHLE: return "0.2.3"
-        }
+        "0.2.3"
     }
 
     var summary: String {
-        switch self {
-        case .hyperHLE:
-            return "A fork of touchHLE that runs more games."
-        case .touchHLE:
-            return "The original emulator. Worth trying if a game misbehaves on HyperHLE."
-        }
+        "Emulates older iPhone games."
     }
 
-    /// The cores understand different options, and an option a core does not
-    /// recognise aborts the launch, so each reads its own defaults file out of
-    /// the app bundle.
+    /// Keep the defaults matched to the touchHLE core.
     var defaultOptionsFileName: String {
-        switch self {
-        case .hyperHLE: return "touchHLE_default_options.txt"
-        case .touchHLE: return "touchHLE_default_options.touchhle.txt"
-        }
+        "touchHLE_default_options.touchhle.txt"
     }
 
     fileprivate var libraryName: String { "lib\(rawValue)_core.dylib" }
@@ -173,7 +151,8 @@ enum CoreSelection {
         if let stored, let kind = CoreKind(rawValue: stored), kind.isAvailable {
             return kind
         }
-        return CoreKind.installed.first ?? .hyperHLE
+        // Saved defaults/overrides from builds with another core resolve here.
+        return CoreKind.installed.first ?? .touchHLE
     }
 
     static func kind(forBundleIdentifier bundleIdentifier: String?) -> CoreKind {

@@ -11,6 +11,10 @@ bool touchhle_ios_jit_available(void);
 // time the app starts as a new process; the entitlement does not.
 bool touchhle_ios_jit_is_from_debugger(void);
 
+// Start from a run-loop timer so SDL's event pump can also service the main
+// dispatch queue during gameplay. The callback runs on the main thread.
+void touchhle_ios_schedule_game_launch(void (^launch)(void));
+
 // The emulator core lives in a dylib that the app loads at runtime (see
 // EmulatorCore.swift), so its entry points are found with dlsym rather than
 // declared here. Only the SDL shim below is part of the app binary.
