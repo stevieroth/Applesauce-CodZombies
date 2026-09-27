@@ -9,9 +9,10 @@ on-screen touch controls**. No game files are included.
 
 Download the unsigned IPA and **Applesauce-LiveContainer-universal.js** from
 [Releases](https://github.com/stevieroth/Applesauce-CodZombies/releases).
-**You do not need to compile the app.** The first release candidate is 0.4.1 RC1.
-Its local build/package checks passed; testing of this exact package on an
-iPhone is still pending. It retains the previously tested startup/rotation fixes.
+**You do not need to compile the app.** The first stable release is 0.4.1.
+Stephen confirmed that Zombies launches and plays on his iPhone. This is the
+exact IPA tested as RC1, with the same startup/rotation fixes; no reinstall is
+needed if you already have RC1. Other devices and setups may behave differently.
 
 1. Sideload the IPA with your existing signing setup, or import it into LiveContainer.
 2. In LiveContainer, select the downloaded script as Applesauce's JIT launch
