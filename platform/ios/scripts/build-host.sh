@@ -33,17 +33,10 @@ esac
 DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 export DEVELOPER_DIR
 
-# Empty, not inherited: this call always builds this repository's own core.
-TOUCHHLE_CORE_REPO= sh "$ROOT/scripts/build-rust.sh" "$RUST_TARGET" "$CONFIGURATION"
-
-# The app ships every core it is built with. TOUCHHLE_CORE_REPO points at a
-# checkout of the other core (johnny901901901/touchHLE, branch ios-core-dylib);
-# without it the app is built with HyperHLE alone and the core picker hides
-# itself.
-if [ -n "${TOUCHHLE_CORE_REPO:-}" ]; then
-    TOUCHHLE_CORE_REPO="$TOUCHHLE_CORE_REPO" \
-        sh "$ROOT/scripts/build-rust.sh" "$RUST_TARGET" "$CONFIGURATION"
-fi
+# This app ships only the working touchHLE core. Default to the existing
+# nested checkout; do not rebuild the outer repository's HyperHLE core.
+TOUCHHLE_CORE_REPO="${TOUCHHLE_CORE_REPO:-$REPO/touchHLE-ios-core}" \
+    sh "$ROOT/scripts/build-rust.sh" "$RUST_TARGET" "$CONFIGURATION"
 
 xcodebuild \
     -project "$ROOT/TouchHLEHost.xcodeproj" \
@@ -54,3 +47,6 @@ xcodebuild \
     -derivedDataPath "$REPO/build/host-$SDK" \
     CODE_SIGNING_ALLOWED=NO \
     build
+
+python3 "$ROOT/scripts/embed-jit-script.py" \
+    "$REPO/build/host-$SDK/Build/Products/$CONFIGURATION-$SDK/Applesauce.app"

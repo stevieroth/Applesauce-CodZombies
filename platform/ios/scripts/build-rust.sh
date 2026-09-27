@@ -6,11 +6,8 @@ REPO=$(CDPATH= cd -- "$ROOT/../.." && pwd)
 TARGET=${1:-aarch64-apple-ios-sim}
 CONFIGURATION=${2:-Debug}
 
-# Which emulator core to build. This repository holds HyperHLE; point
-# TOUCHHLE_CORE_REPO at a checkout of another core (an upstream touchHLE tree,
-# say) to build that one instead. Its dylib is copied in beside HyperHLE's so
-# the app can ship both and load whichever a game is set to use.
-CORE_REPO=${TOUCHHLE_CORE_REPO:-"$REPO"}
+# Build only the pinned touchHLE core prepared by prepare-codz.sh.
+CORE_REPO=${TOUCHHLE_CORE_REPO:-"$REPO/touchHLE-ios-core"}
 CORE_REPO=$(CDPATH= cd -- "$CORE_REPO" && pwd)
 CORE_ENTRY="$CORE_REPO/platform/ios/rust-entry/Cargo.toml"
 if [ ! -f "$CORE_ENTRY" ]; then
@@ -44,7 +41,11 @@ CMAKE="$ROOT/scripts/cmake-ios.sh"
 DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 IPHONEOS_DEPLOYMENT_TARGET=15.0
 CFLAGS="${CFLAGS:-} -ffile-prefix-map=$HOME=/build -fdebug-prefix-map=$HOME=/build"
-CXXFLAGS="${CXXFLAGS:-} -DFMT_CONSTEVAL= -ffile-prefix-map=$HOME=/build -fdebug-prefix-map=$HOME=/build"
+if [ "$CORE_REPO" = "$REPO" ]; then
+    CXXFLAGS="${CXXFLAGS:-} -DFMT_CONSTEVAL= -ffile-prefix-map=$HOME=/build -fdebug-prefix-map=$HOME=/build"
+else
+    CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$HOME=/build -fdebug-prefix-map=$HOME=/build"
+fi
 
 # The core is a dylib that links against the shared SDL2 embedded in the app
 # bundle (see build-sdl-shared.sh), not against a private static copy.
@@ -124,7 +125,7 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" != "$IPHONEOS_DEPLOYMENT_TARGET" ]; th
     rm -rf "${CARGO_TARGET_DIR:?}/$TARGET"
 fi
 
-set -- build \
+set -- build --locked \
     --manifest-path "$CORE_ENTRY" \
     --target "$TARGET"
 

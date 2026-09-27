@@ -1,13 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Run from the Embed-Cores build phase. Copies the shared SDL2 and every
-# emulator core dylib into the app bundle's Frameworks folder, and signs them
-# with the same identity as the app.
-#
-# This is a script rather than a Copy Files phase because the source paths
-# depend on the configuration and SDK, and because the number of cores is not
-# fixed.
+# Run from the Embed-Cores build phase. Embed shared SDL2 and touchHLE only.
+# Source paths depend on the configuration and SDK.
 
 DESTINATION="${TARGET_BUILD_DIR:?}/${FRAMEWORKS_FOLDER_PATH:?}"
 mkdir -p "$DESTINATION"
@@ -62,14 +57,6 @@ embed() {
 
 embed "${SDL_SHARED_DIR:?}/lib/libSDL2-2.0.0.dylib"
 
-embedded_a_core=0
-for core in "${RUST_LIB_DIR:?}"/*.dylib; do
-    [ -f "$core" ] || continue
-    embed "$core"
-    embedded_a_core=1
-done
-
-if [ "$embedded_a_core" = 0 ]; then
-    echo "error: no core dylib found in $RUST_LIB_DIR. Run build-rust.sh first." >&2
-    exit 1
-fi
+# Incremental builds may still contain the former core in the app bundle.
+rm -f "$DESTINATION/libhyperhle_core.dylib"
+embed "${RUST_LIB_DIR:?}/libtouchhle_core.dylib"
