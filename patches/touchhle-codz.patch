@@ -1,0 +1,571 @@
+diff --git a/src/environment.rs b/src/environment.rs
+index 990105e5..1ad694b9 100644
+--- a/src/environment.rs
++++ b/src/environment.rs
+@@ -9,6 +9,7 @@
+ //! via the re-exports one level up.
+ 
+ pub mod app_picker;
++mod codz;
+ mod mutex;
+ mod nullable_box;
+ 
+@@ -16,7 +17,7 @@ use crate::abi::{CallFromHost, GuestFunction};
+ use crate::audio::openal::OpenALManager;
+ use crate::cpu::Cpu;
+ use crate::libc::semaphore::sem_t;
+-use crate::mem::{GuestUSize, MutPtr, MutVoidPtr};
++use crate::mem::{ConstPtr, GuestUSize, MutPtr, MutVoidPtr};
+ use crate::{
+     abi, bundle, cpu, dyld, frameworks, fs, gdb, image, libc, mach_o, mem, objc, options, stack,
+     window,
+@@ -119,6 +120,14 @@ pub struct Environment {
+     // The amount of ticks to run for Some(value), or single-stepping for None.
+     // Sadly, setting ticks to 1 does not step properly, so Option is required.
+     remaining_ticks: Option<u64>,
++    /// COD Zombies diagnostic: loader thread, start, last sample, phase.
++    pub codz_trace: Option<(ThreadId, Instant, Instant, u8)>,
++    codz_post_checksum_samples: u32,
++    codz_last_trace_pc: Option<u32>,
++    codz_final_steps: Option<u32>,
++    codz_runtime_dumped: bool,
++    codz_high_runtime_dumped: bool,
++    codz_callsite_dumped: bool,
+     panic_cell: Rc<Cell<Option<Environment>>>,
+ }
+ 
+@@ -398,6 +407,8 @@ impl Environment {
+         )
+         .map_err(|e| format!("Could not load executable: {e}"))?;
+ 
++        codz::preserve_loader_checksum(bundle.bundle_identifier(), &executable, &mut mem);
++
+         let mut dylibs = Vec::new();
+         for dylib in &executable.dynamic_libraries {
+             // There are some Free Software libraries bundled with touchHLE and
+@@ -641,6 +652,13 @@ impl Environment {
+             is_app_picker: false,
+             yielder: std::ptr::null(),
+             remaining_ticks: None,
++            codz_trace: None,
++            codz_post_checksum_samples: 0,
++            codz_last_trace_pc: None,
++            codz_final_steps: None,
++            codz_runtime_dumped: false,
++            codz_high_runtime_dumped: false,
++            codz_callsite_dumped: false,
+             panic_cell: Rc::new(Cell::new(None)),
+         };
+ 
+@@ -776,6 +794,13 @@ impl Environment {
+             is_app_picker: true,
+             yielder: std::ptr::null(),
+             remaining_ticks: None,
++            codz_trace: None,
++            codz_post_checksum_samples: 0,
++            codz_last_trace_pc: None,
++            codz_final_steps: None,
++            codz_runtime_dumped: false,
++            codz_high_runtime_dumped: false,
++            codz_callsite_dumped: false,
+             panic_cell: Rc::new(Cell::new(None)),
+         };
+ 
+@@ -835,6 +860,13 @@ impl Environment {
+             is_app_picker: true,
+             yielder: std::ptr::null(),
+             remaining_ticks: None,
++            codz_trace: None,
++            codz_post_checksum_samples: 0,
++            codz_last_trace_pc: None,
++            codz_final_steps: None,
++            codz_runtime_dumped: false,
++            codz_high_runtime_dumped: false,
++            codz_callsite_dumped: false,
+             panic_cell: Rc::new(Cell::new(None)),
+         }
+     }
+@@ -1311,6 +1343,19 @@ impl Environment {
+                 // very large values are bad for responsiveness.
+                 self.remaining_ticks = Some(100_000);
+             }
++            if let Some((_, start, last_sample, _)) = self.codz_trace.as_mut() {
++                let now = Instant::now();
++                if now.duration_since(*start).as_secs() < 120
++                    && now.duration_since(*last_sample).as_millis() >= 250
++                {
++                    *last_sample = now;
++                    log!(
++                        "CODZ TRACE02 SAMPLE elapsed_ms={} thread={} cpsr={:#x} regs={:08x?} threads={:?}",
++                        now.duration_since(*start).as_millis(), self.current_thread,
++                        self.cpu.cpsr(), self.cpu.regs(), self.threads
++                    );
++                }
++            }
+             let mut kill_current_thread = false;
+ 
+             if let Some(w) = self.window.as_mut() {
+@@ -1391,7 +1436,13 @@ impl Environment {
+                 // this until after we've done some amount of work on the guest
+                 // thread, lest every single callback call pay this cost.
+                 if let Some(ref mut window) = self.window {
++                    if self.codz_post_checksum_samples > 0 {
++                        log!("CODZ TRACE05 EVENTS ENTER remaining={}", self.codz_post_checksum_samples);
++                    }
+                     window.poll_for_events(&self.options);
++                    if self.codz_post_checksum_samples > 0 {
++                        log!("CODZ TRACE05 EVENTS EXIT");
++                    }
+                 }
+                 let curr_thread_block = self.threads[self.current_thread].blocked_by.clone();
+                 if stepping || matches!(curr_thread_block, ThreadBlock::WaitingForDebugger(_)) {
+@@ -1606,7 +1657,16 @@ impl Environment {
+                             svc_pc,
+                             svc,
+                         ) {
++                            let trace_host = self.codz_post_checksum_samples > 0;
++                            if trace_host {
++                                log!("CODZ TRACE05 HOST ENTER svc_pc={:#x} regs={:08x?}",
++                                    svc_pc, self.cpu.regs());
++                            }
+                             f.call_from_guest(self);
++                            if trace_host {
++                                log!("CODZ TRACE05 HOST EXIT svc_pc={:#x} regs={:08x?}",
++                                    svc_pc, self.cpu.regs());
++                            }
+                             if let Some(len) = self.options.zero_stack_after_guest_to_host_call {
+                                 log_once!("Applying zeroing of stack after guest to host call.");
+                                 let start = self.cpu.regs()[cpu::Cpu::SP] - len;
+@@ -1645,9 +1705,110 @@ impl Environment {
+                 .remaining_ticks
+                 .is_none_or(|remaining_ticks| remaining_ticks > 0)
+             {
+-                let state = self
+-                    .cpu
+-                    .run_or_step(&mut self.mem, self.remaining_ticks.as_mut());
++                if let Some((thread, start, _, phase)) = self.codz_trace.as_mut() {
++                    if *thread == self.current_thread && start.elapsed().as_secs() < 120 {
++                        let pc = self.cpu.regs()[cpu::Cpu::PC];
++                        let hashing = (0x9120..=0x9138).contains(&pc);
++                        if (*phase == 0 && hashing) || (*phase == 1 && !hashing) {
++                            *phase += 1;
++                            if *phase == 2 {
++                                self.codz_post_checksum_samples = 16384;
++                            }
++                            log!(
++                                "CODZ TRACE02 CHECKSUM phase={} elapsed_ms={} regs={:08x?}",
++                                phase, start.elapsed().as_millis(), self.cpu.regs()
++                            );
++                        }
++                    }
++                }
++                let regs = self.cpu.regs();
++                if self.codz_trace.is_some() && self.codz_final_steps.is_none()
++                    && self.current_thread == 1 && regs[cpu::Cpu::PC] == 0x5b508
++                    && regs[cpu::Cpu::LR] == 0x3a93c && regs[6] == 0x25511d
++                    && regs[cpu::Cpu::SP] < 0x01000000
++                {
++                    self.codz_final_steps = Some(32768);
++                    log!("CODZ TRACE07 FINAL PATH ARMED regs={:08x?}", regs);
++                }
++                let final_step = self.codz_final_steps.is_some_and(|left| left > 0);
++
++                let pc = self.cpu.regs()[cpu::Cpu::PC];
++                let trace_active = self.codz_post_checksum_samples > 0;
++                if final_step
++                    && !self.codz_runtime_dumped
++                    && (0x66d00..0x67000).contains(&pc)
++                {
++                    let bytes: Vec<u8> = (0..0x100)
++                        .map(|i| self.mem.read(ConstPtr::<u8>::from_bits(0x66d00 + i)))
++                        .collect();
++                    log!("CODZ TRACE06 RUNTIME CODE 0x00066d00: {:02x?}", bytes);
++                    self.codz_runtime_dumped = true;
++                }
++                if final_step
++                    && !self.codz_high_runtime_dumped
++                    && (0x5795f000..0x57962000).contains(&pc)
++                {
++                    let bytes: Vec<u8> = (0..0x200)
++                        .map(|i| self.mem.read(ConstPtr::<u8>::from_bits(0x5795ff00 + i)))
++                        .collect();
++                    log!("CODZ TRACE07 HIGH RUNTIME CODE 0x5795ff00: {:02x?}", bytes);
++                    self.codz_high_runtime_dumped = true;
++                }
++                if final_step
++                    && !self.codz_callsite_dumped
++                    && (0x255100..0x255180).contains(&pc)
++                {
++                    let bytes: Vec<u8> = (0..0x100)
++                        .map(|i| self.mem.read(ConstPtr::<u8>::from_bits(0x255100 + i)))
++                        .collect();
++                    log!(
++                        "CODZ TRACE08 CALLSITE CODE 0x00255100 cpsr={:#x}: {:02x?}",
++                        self.cpu.cpsr(),
++                        bytes
++                    );
++                    self.codz_callsite_dumped = true;
++                }
++                let trace_post = (final_step
++                    && self.codz_final_steps.unwrap_or(0) % 256 == 0)
++                    || (trace_active
++                        && (self.codz_last_trace_pc != Some(pc)
++                            || self.codz_post_checksum_samples % 64 == 0));
++                if trace_active {
++                    self.codz_post_checksum_samples -= 1;
++                    self.codz_last_trace_pc = Some(pc);
++                }
++                if trace_post {
++                    log!("CODZ TRACE07 CPU BEFORE thread={} regs={:08x?}",
++                        self.current_thread, self.cpu.regs());
++                }
++                let trace_callsite = final_step && (0x255100..0x255140).contains(&pc);
++                if trace_callsite {
++                    log!(
++                        "CODZ TRACE08 CALLSITE BEFORE cpsr={:#x} regs={:08x?}",
++                        self.cpu.cpsr(),
++                        self.cpu.regs()
++                    );
++                }
++                let state = if final_step {
++                    *self.codz_final_steps.as_mut().unwrap() -= 1;
++                    if let Some(ticks) = self.remaining_ticks.as_mut() {
++                        *ticks = ticks.saturating_sub(1);
++                    }
++                    self.cpu.run_or_step(&mut self.mem, None)
++                } else {
++                    self.cpu.run_or_step(&mut self.mem, self.remaining_ticks.as_mut())
++                };
++                if trace_post {
++                    log!("CODZ TRACE07 CPU AFTER thread={} regs={:08x?}",
++                        self.current_thread, self.cpu.regs());
++                }
++                if trace_callsite {
++                    log!(
++                        "CODZ TRACE08 CALLSITE AFTER cpsr={:#x} regs={:08x?}",
++                        self.cpu.cpsr(),
++                        self.cpu.regs()
++                    );
++                }
+ 
+                 match self.handle_cpu_state(state) {
+                     ThreadNextAction::Continue => {}
+diff --git a/src/environment/codz.rs b/src/environment/codz.rs
+new file mode 100644
+index 00000000..1cdac422
+--- /dev/null
++++ b/src/environment/codz.rs
+@@ -0,0 +1,58 @@
++/*
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
++ */
++//! Compatibility with COD Zombies 1.5's S3E data loader.
++
++use crate::mach_o::MachO;
++use crate::mem::{ConstPtr, Mem, MutPtr};
++
++/// Must run before Dyld rewrites the executable's import stubs, and before
++/// the CPU can cache instructions from the executable.
++pub(super) fn preserve_loader_checksum(bundle_id: &str, executable: &MachO, mem: &mut Mem) {
++    if bundle_id != "com.activision.callofduty" {
++        return;
++    }
++    let (Some(text), Some(code), Some(data)) = (
++        executable.get_section("__text"),
++        executable.get_section("s3e_code"),
++        executable.get_section("s3e_data"),
++    ) else {
++        return;
++    };
++    // The routine address and algorithm below belong to this exact layout.
++    // In particular, do not apply them to the already working 1.1 release.
++    if (
++        text.addr, text.size, code.addr, code.size, data.addr, data.size,
++    ) != (0x2040, 0x58084, 0x65f00, 0x25e6e0, 0xa0e000, 0xc670)
++    {
++        log!("CODZ TRACE10: checksum workaround skipped for different game layout");
++        return;
++    }
++
++    // The routine at 0x8fc4 hashes every byte from __text through s3e_code,
++    // including __symbol_stub4. Its result seeds the data decoder at 0x9198.
++    // Dyld replaces those stubs with SVCs, which changes the seed and silently
++    // corrupts the decoded data. Preserve the pre-link result instead.
++    let checksum = mem
++        .bytes_at(
++            ConstPtr::from_bits(text.addr),
++            code.next_section_addr() - text.addr,
++        )
++        .iter()
++        .fold(1234u32, |hash, &byte| {
++            hash.wrapping_mul(31).wrapping_add(u32::from(byte))
++        });
++    if checksum != 0x37fcb7b1 || mem.read(ConstPtr::<u32>::from_bits(0x8fc4)) != 0xe92d40f0 {
++        log!("CODZ TRACE10: checksum workaround skipped for unrecognized code ({checksum:#010x})");
++        return;
++    }
++
++    // A32: ldr r0, [pc]; bx lr; .word checksum. Only the in-memory checksum
++    // routine changes; the data decoder and the game file remain intact.
++    for (index, word) in [0xe59f0000, 0xe12fff1e, checksum].into_iter().enumerate() {
++        mem.write(MutPtr::<u32>::from_bits(0x8fc4 + index as u32 * 4), word);
++    }
++    log!("CODZ TRACE10 ORIGINAL CODE CHECKSUM: {checksum:#010x}; S3E loader compatibility applied");
++}
+diff --git a/src/frameworks/audio_toolbox/audio_session.rs b/src/frameworks/audio_toolbox/audio_session.rs
+index 2238e74b..3b6a95a4 100644
+--- a/src/frameworks/audio_toolbox/audio_session.rs
++++ b/src/frameworks/audio_toolbox/audio_session.rs
+@@ -10,6 +10,8 @@ use crate::dyld::{export_c_func, FunctionExports};
+ use crate::frameworks::carbon_core::OSStatus;
+ use crate::frameworks::core_audio_types::{debug_fourcc, fourcc};
+ use crate::frameworks::core_foundation::cf_run_loop::{CFRunLoopMode, CFRunLoopRef};
++use crate::frameworks::core_foundation::cf_string::CFStringRef;
++use crate::frameworks::foundation::ns_string;
+ use crate::mem::{guest_size_of, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr};
+ use crate::Environment;
+ 
+@@ -22,6 +24,7 @@ const kAudioSessionBadPropertySizeError: OSStatus = fourcc(b"!siz") as _;
+ type AudioSessionPropertyID = u32;
+ const kAudioSessionProperty_OtherAudioIsPlaying: AudioSessionPropertyID = fourcc(b"othr");
+ const kAudioSessionProperty_AudioCategory: AudioSessionPropertyID = fourcc(b"acat");
++const kAudioSessionProperty_AudioRoute: AudioSessionPropertyID = fourcc(b"rout");
+ const kAudioSessionProperty_CurrentHardwareSampleRate: AudioSessionPropertyID = fourcc(b"chsr");
+ const kAudioSessionProperty_CurrentHardwareOutputNumberChannels: AudioSessionPropertyID =
+     fourcc(b"choc");
+@@ -108,6 +111,14 @@ fn AudioSessionGetProperty(
+             let value: u32 = state.audio_session_category;
+             env.mem.write(out_data.cast(), value);
+         }
++        kAudioSessionProperty_AudioRoute => {
++            // Report the emulated device's built-in speaker. This legacy
++            // property returns a CFStringRef, not an audio-route enum.
++            // A pooled static string stays valid across repeated queries.
++            let route: CFStringRef = ns_string::get_static_str(env, "Speaker");
++            env.mem.write(out_data.cast(), route);
++            log!("TRACE11 AudioSessionGetProperty('rout') -> Speaker");
++        }
+         kAudioSessionProperty_CurrentHardwareSampleRate => {
+             let value: f64 = state.current_hardware_sample_rate;
+             env.mem.write(out_data.cast(), value);
+@@ -226,6 +237,7 @@ fn get_audio_session_property_size(in_ID: AudioSessionPropertyID) -> GuestUSize
+     match in_ID {
+         kAudioSessionProperty_OtherAudioIsPlaying => guest_size_of::<u32>(),
+         kAudioSessionProperty_AudioCategory => guest_size_of::<u32>(),
++        kAudioSessionProperty_AudioRoute => guest_size_of::<CFStringRef>(),
+         kAudioSessionProperty_CurrentHardwareSampleRate => guest_size_of::<f64>(),
+         kAudioSessionProperty_CurrentHardwareOutputNumberChannels => guest_size_of::<u32>(),
+         kAudioSessionProperty_CurrentHardwareOutputVolume => guest_size_of::<f32>(),
+diff --git a/src/lib.rs b/src/lib.rs
+index 60456468..85ee0b11 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -422,6 +422,18 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
+         assert!(parse_result == Ok(true));
+     }
+ 
++    // The iOS release is intentionally offline and touch-only. Apply this
++    // after saved options so settings from experimental builds cannot enable
++    // guest networking or controller mappings on upgrade.
++    #[cfg(target_os = "ios")]
++    {
++        options.network_access = false;
++        options.analog_stick_tilt_controls = false;
++        options.button_to_touch.clear();
++        options.dpad_to_touch = None;
++        options.stick_to_touch = None;
++    }
++
+     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+         Environment::new(bundle, fs, options.clone(), app_args.unwrap_or_default())
+     }));
+diff --git a/src/libc/dlfcn.rs b/src/libc/dlfcn.rs
+index 98ea10be..35eba091 100644
+--- a/src/libc/dlfcn.rs
++++ b/src/libc/dlfcn.rs
+@@ -6,7 +6,7 @@
+ //! `dlfcn.h` (`dlopen()` and friends)
+ 
+ use crate::dyld::{export_c_func, FunctionExports};
+-use crate::mem::{ConstPtr, MutVoidPtr, Ptr};
++use crate::mem::{ConstPtr, MutPtr, MutVoidPtr, Ptr};
+ use crate::Environment;
+ 
+ const RTLD_DEFAULT: MutVoidPtr = Ptr::from_bits(-2 as _);
+@@ -54,8 +54,83 @@ fn dlclose(env: &mut Environment, handle: MutVoidPtr) -> i32 {
+     0 // success
+ }
+ 
++
++#[repr(C)]
++struct DlInfo {
++    dli_fname: ConstPtr<u8>,
++    dli_fbase: MutVoidPtr,
++    dli_sname: ConstPtr<u8>,
++    dli_saddr: MutVoidPtr,
++}
++
++impl crate::mem::SafeWrite for DlInfo {}
++
++fn dladdr(
++    env: &mut Environment,
++    address: ConstPtr<std::ffi::c_void>,
++    info: MutPtr<DlInfo>,
++) -> i32 {
++    let regs = env.cpu.regs();
++
++    log!(
++        "CODZ DLADDR ENTER: address={:?} info={:?} R0={:#x} R1={:#x} R2={:#x} R3={:#x} SP={:#x} LR={:#x} PC={:#x}",
++        address,
++        info,
++        regs[0],
++        regs[1],
++        regs[2],
++        regs[3],
++        regs[crate::cpu::Cpu::SP],
++        regs[crate::cpu::Cpu::LR],
++        regs[crate::cpu::Cpu::PC],
++    );
++
++    if info.is_null() {
++        log!("CODZ DLADDR: info is NULL -> returning 0");
++        return 0;
++    }
++
++    if env.bundle.bundle_identifier() == "com.activision.callofduty"
++        && address.to_bits() == 0x8f00
++        && env.cpu.regs()[crate::cpu::Cpu::LR] == 0x907c
++        && env.codz_trace.is_none()
++    {
++        let now = std::time::Instant::now();
++        env.codz_trace = Some((env.current_thread, now, now, 0));
++        log!("CODZ TRACE07 ARMED: high-runtime code dump and extended stepping");
++    }
++
++    let addr = 0x00008f80u32;
++    let len = 0x130usize;
++
++    let bytes: Vec<u8> = (0..len)
++        .map(|i| env.mem.read(ConstPtr::<u8>::from_bits(addr + i as u32)))
++        .collect();
++
++    log!("CODZ CALLSITE BLOCK {:#010x}: {:02x?}", addr, bytes);
++
++    let fname = env.mem.alloc_and_write_cstr(b"kiwi");
++
++    let result = DlInfo {
++        dli_fname: fname.cast_const(),
++        dli_fbase: MutVoidPtr::from_bits(0x1000),
++        dli_sname: ConstPtr::null(),
++        dli_saddr: MutVoidPtr::null(),
++    };
++
++    env.mem.write(info, result);
++
++    log!(
++        "CODZ DLADDR: returning success fname={:?} fbase=0x1000 sname=NULL saddr=NULL",
++        fname
++    );
++
++    1
++}
++
+ pub const FUNCTIONS: FunctionExports = &[
+     export_c_func!(dlopen(_, _)),
+     export_c_func!(dlsym(_, _)),
+     export_c_func!(dlclose(_)),
++    export_c_func!(dladdr(_, _)),
+ ];
+diff --git a/src/options.rs b/src/options.rs
+index 348e83ca..5087b127 100644
+--- a/src/options.rs
++++ b/src/options.rs
+@@ -114,6 +114,13 @@ impl Options {
+             Ok(arg)
+         }
+ 
++        if cfg!(target_os = "ios")
++            && arg.starts_with("--host=")
++        {
++            log!("Ignoring retired experimental option in offline edition");
++            return Ok(true);
++        }
++
+         if arg == "--fullscreen" {
+             self.fullscreen = true;
+         } else if arg == "--upside-down" {
+diff --git a/src/window.rs b/src/window.rs
+index 948d0047..f331cfe8 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -119,6 +119,13 @@ fn set_sdl2_orientation(orientation: DeviceOrientation) {
+     );
+ }
+ 
++/// When the iOS host has selected a starting orientation lock, the guest must
++/// keep using that orientation for the whole session.  The host sets this SDL
++/// hint before entering the emulator; reading it here lets us stop emulated
++/// UIKit rotation before it can resize the SDL window or change touch
++/// coordinates.
++const TOUCHHLE_ORIENTATION_LOCK_HINT: &str = "SDL_TOUCHHLE_ORIENTATION_LOCKED";
++
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub enum FingerId {
+     Mouse,
+@@ -232,6 +239,7 @@ pub struct Window {
+     splash_image: Option<Image>,
+     device_family: DeviceFamily,
+     device_orientation: DeviceOrientation,
++    orientation_locked: bool,
+     controller_ctx: sdl2::GameControllerSubsystem,
+     controllers: Vec<sdl2::controller::GameController>,
+     dpad_state: DpadState,
+@@ -295,6 +303,10 @@ impl Window {
+         // that here.
+         let device_family = options.device_family.unwrap_or(DeviceFamily::iPhone);
+         let device_orientation = options.initial_orientation;
++        let orientation_locked = matches!(
++            sdl2::hint::get(TOUCHHLE_ORIENTATION_LOCK_HINT).as_deref(),
++            Some("1")
++        );
+         let fullscreen = options.fullscreen;
+ 
+         let mut window = if Self::rotatable_fullscreen() {
+@@ -381,6 +393,7 @@ impl Window {
+             splash_image: launch_image,
+             device_family,
+             device_orientation,
++            orientation_locked,
+             controller_ctx,
+             controllers: Vec::new(),
+             dpad_state: DpadState {
+@@ -1308,6 +1321,14 @@ impl Window {
+             return;
+         }
+ 
++        if self.orientation_locked {
++            log!(
++                "Ignoring guest orientation change to {:?}; starting orientation is locked.",
++                new_orientation
++            );
++            return;
++        }
++
+         if !self.fullscreen && !Self::rotatable_fullscreen() {
+             let (width, height) = if Self::rotatable_fullscreen() {
+                 set_sdl2_orientation(new_orientation);
+diff --git a/touchHLE_default_options.txt b/touchHLE_default_options.txt
+index 3da88328..c1cba86f 100644
+--- a/touchHLE_default_options.txt
++++ b/touchHLE_default_options.txt
+@@ -210,7 +210,7 @@ jp.co.capcom.residentevil.en: --landscape-left --stabilize-virtual-cursor=0.1,10
+ 
+ # COD Zombies
+ # DPad/Stick = Move, Left shoulder = Knife, A = Shoot, B = Aim, X = Reload, Y = Grenade, Start = Pause
+-com.activision.callofduty: --x-tilt-offset=-10 --dpad-to-touch=30,215,80,80 --stick-to-touch=30,215,80,80 --button-to-touch=A,387,210 --button-to-touch=B,455,185 --button-to-touch=X,455,25 --button-to-touch=Y,440,95 --button-to-touch=LeftShoulder,240,310 --button-to-touch=Start,20,25
++com.activision.callofduty: --x-tilt-offset=-10
+ 
+ # Pandemonium
+ # DPad/Stick = Move, Up = Switch Character, X = Fargus Attack, A = Fire, B = Jump, LeftShoulder = Switch Camera, Start = Pause

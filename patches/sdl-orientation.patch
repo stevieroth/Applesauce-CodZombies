@@ -1,0 +1,51 @@
+diff --git a/src/video/uikit/SDL_uikitviewcontroller.h b/src/video/uikit/SDL_uikitviewcontroller.h
+index 6fdcbecb0..26f9496c2 100644
+--- a/src/video/uikit/SDL_uikitviewcontroller.h
++++ b/src/video/uikit/SDL_uikitviewcontroller.h
+@@ -57,6 +57,10 @@
+ 
+ #if !TARGET_OS_TV
+ - (NSUInteger)supportedInterfaceOrientations;
++- (BOOL)shouldAutorotate;
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 260000
++- (BOOL)prefersInterfaceOrientationLocked;
++#endif
+ - (BOOL)prefersStatusBarHidden;
+ - (BOOL)prefersHomeIndicatorAutoHidden;
+ - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures;
+diff --git a/src/video/uikit/SDL_uikitviewcontroller.m b/src/video/uikit/SDL_uikitviewcontroller.m
+index a6b157f25..b65460b28 100644
+--- a/src/video/uikit/SDL_uikitviewcontroller.m
++++ b/src/video/uikit/SDL_uikitviewcontroller.m
+@@ -35,6 +35,12 @@
+ #include "SDL_uikitwindow.h"
+ #include "SDL_uikitopengles.h"
+ 
++// Set by the Applesauce iOS host for the duration of a game. The regular SDL
++// orientation hint chooses the supported mask; this separate hint asks UIKit
++// to keep the scene at its current orientation on iOS 26 and disables the old
++// autorotation path on earlier iOS versions.
++#define TOUCHHLE_ORIENTATION_LOCK_HINT "SDL_TOUCHHLE_ORIENTATION_LOCKED"
++
+ #if TARGET_OS_TV
+ static void SDLCALL
+ SDL_AppleTVControllerUIHintChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
+@@ -204,6 +210,18 @@ - (NSUInteger)supportedInterfaceOrientations
+     return UIKit_GetSupportedOrientations(window);
+ }
+ 
++- (BOOL)shouldAutorotate
++{
++    return !SDL_GetHintBoolean(TOUCHHLE_ORIENTATION_LOCK_HINT, SDL_FALSE);
++}
++
++#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 260000
++- (BOOL)prefersInterfaceOrientationLocked
++{
++    return SDL_GetHintBoolean(TOUCHHLE_ORIENTATION_LOCK_HINT, SDL_FALSE);
++}
++#endif
++
+ - (BOOL)prefersStatusBarHidden
+ {
+     BOOL hidden = (window->flags & (SDL_WINDOW_FULLSCREEN|SDL_WINDOW_BORDERLESS)) != 0;
