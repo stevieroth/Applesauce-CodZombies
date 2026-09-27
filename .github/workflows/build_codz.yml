@@ -1,0 +1,37 @@
+name: Build Applesauce-CodZombies
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          brew install cmake ninja
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup override set 1.98.0
+          rustup target add aarch64-apple-ios
+      - name: Prepare pinned dependencies
+        run: |
+          sh platform/ios/scripts/prepare-codz.sh
+          sh platform/ios/scripts/prepare-boost.sh
+      - name: Build
+        run: |
+          sh platform/ios/scripts/build-sdl-shared.sh iphoneos
+          sh platform/ios/scripts/build-host.sh iphoneos Release
+      - name: Package and verify
+        run: |
+          sh platform/ios/scripts/package-ipa.sh dist/Applesauce-CodZombies-0.4.1-rc1-unsigned.ipa
+          python3 platform/ios/scripts/verify-codz-release.py dist/Applesauce-CodZombies-0.4.1-rc1-unsigned.ipa
+          python3 platform/ios/scripts/test-runloop.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Applesauce-CodZombies-RC1
+          path: |
+            dist/*.ipa
+            dist/*.sha256
+            jit/*
+          if-no-files-found: error
